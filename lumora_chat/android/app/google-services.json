@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "291203901512",
+    "project_id": "lumora-e450f",
+    "storage_bucket": "lumora-e450f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:291203901512:android:5ed9a48379815bc3e0d07d",
+        "android_client_info": {
+          "package_name": "com.example.lumora_chat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAv16IorQeUJIcz0aZuh8Uj7jb3OzBh8hc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
