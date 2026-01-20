@@ -4,7 +4,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloudinary_public/cloudinary_public.dart';
 import 'dart:io';
-import 'dart:async'; // StreamSubscription සඳහා
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:googleapis_auth/auth_io.dart';
+import 'package:http/http.dart' as http;
+// 
 
 class ChatScreen extends StatefulWidget {
   final String peerId;
@@ -21,8 +26,6 @@ class _ChatScreenState extends State<ChatScreen> {
   final cloudinary = CloudinaryPublic('ds974lczz', 'fulvalgc', cache: false);
   late String chatId;
   bool _isUploading = false;
-  
-  // ✅ අලුතෙන් එකතු කළ කොටස: දිගටම අහගෙන ඉන්න Listener එකක්
   StreamSubscription? _unreadListener;
 
   @override
@@ -30,33 +33,73 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     chatId = widget.peerId.hashCode <= currentUser!.uid.hashCode 
         ? '${widget.peerId}-${currentUser!.uid}' : '${currentUser!.uid}-${widget.peerId}';
-    
-    // Chat එකට ආපු ගමන් Auto Read වෙන්න පටන් ගන්නවා
     _startListeningForUnreadMessages();
   }
 
   @override
   void dispose() {
-    // Chat එකෙන් එළියට යනකොට Listener එක නවත්වනවා (Memory Save කරන්න)
     _unreadListener?.cancel();
     super.dispose();
   }
 
-  // ✅ මැසේජ් කියෙව්වා කියලා ස්වයංක්‍රීයව අප්ඩේට් කරන Function එක
   void _startListeningForUnreadMessages() {
     _unreadListener = FirebaseFirestore.instance
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .where('senderId', isNotEqualTo: currentUser!.uid) // මගේ නොවන
-        .where('isRead', isEqualTo: false) // කියවා නැති
-        .snapshots()
-        .listen((snapshot) {
-      // කියවා නැති මැසේජ් තියෙනවා නම්, ඒවා ඔක්කොම true කරන්න
+        .collection('chats').doc(chatId).collection('messages')
+        .where('senderId', isNotEqualTo: currentUser!.uid)
+        .where('isRead', isEqualTo: false)
+        .snapshots().listen((snapshot) {
       for (var doc in snapshot.docs) {
         doc.reference.update({'isRead': true});
       }
     });
+  }
+
+  // ✅ V1 Notification Sender
+  Future<void> sendPushNotification(String msg, String type) async {
+    try {
+      DocumentSnapshot userDoc = await FirebaseFirestore.instance.collection('users').doc(widget.peerId).get();
+      if (!userDoc.exists) return;
+      String? token = userDoc.get('fcmToken');
+      if (token == null) return;
+
+      final serviceAccountString = await rootBundle.loadString('assets/service_account.json');
+      final serviceAccountJson = json.decode(serviceAccountString);
+
+      final accountCredentials = ServiceAccountCredentials.fromJson(serviceAccountJson);
+      final scopes = ['https://www.googleapis.com/auth/firebase.messaging'];
+      final client = await clientViaServiceAccount(accountCredentials, scopes);
+      
+      String projectId = serviceAccountJson['project_id'];
+
+      await client.post(
+        Uri.parse('https://fcm.googleapis.com/v1/projects/$projectId/messages:send'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'message': {
+            'token': token,
+            'notification': {
+              'title': currentUser?.displayName ?? "New Message",
+              'body': type == 'image' ? '📷 Photo' : msg,
+            },
+            'data': {'click_action': 'FLUTTER_NOTIFICATION_CLICK', 'chatId': chatId},
+            'android': {'notification': {'channel_id': 'high_importance_channel'}}
+          }
+        }),
+      );
+      client.close();
+    } catch (e) {
+      print("Error sending notification: $e");
+    }
+  }
+
+  void _updateChatList(String message, String type) async {
+    await FirebaseFirestore.instance.collection('users').doc(currentUser!.uid).collection('chatList').doc(widget.peerId).set({
+      'peerId': widget.peerId, 'time': Timestamp.now(), 'lastMsg': type == 'image' ? '📷 Photo' : message,
+    }, SetOptions(merge: true));
+
+    await FirebaseFirestore.instance.collection('users').doc(widget.peerId).collection('chatList').doc(currentUser!.uid).set({
+      'peerId': currentUser!.uid, 'time': Timestamp.now(), 'lastMsg': type == 'image' ? '📷 Photo' : message,
+    }, SetOptions(merge: true));
   }
 
   String _formatTime(Timestamp? timestamp) {
@@ -66,11 +109,6 @@ class _ChatScreenState extends State<ChatScreen> {
     String minute = date.minute.toString().padLeft(2, '0');
     String period = date.hour >= 12 ? "PM" : "AM";
     return "$hour:$minute $period";
-  }
-
-  void _updateChatTime() {
-    FirebaseFirestore.instance.collection('users').doc(currentUser!.uid).update({'lastMessageTime': Timestamp.now()});
-    FirebaseFirestore.instance.collection('users').doc(widget.peerId).update({'lastMessageTime': Timestamp.now()});
   }
 
   void _confirmDelete(String docId) {
@@ -107,7 +145,9 @@ class _ChatScreenState extends State<ChatScreen> {
           'text': '', 'imageUrl': response.secureUrl, 'type': 'image',
           'createdAt': Timestamp.now(), 'senderId': currentUser!.uid, 'isRead': false,
         });
-        _updateChatTime();
+        
+        _updateChatList('Photo', 'image');
+        sendPushNotification('Sent a photo', 'image');
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Upload failed")));
       } finally {
@@ -118,11 +158,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void sendMessage() {
     if (_msgController.text.trim().isEmpty) return;
+    String msg = _msgController.text.trim();
+    
     FirebaseFirestore.instance.collection('chats').doc(chatId).collection('messages').add({
-      'text': _msgController.text.trim(), 'type': 'text',
+      'text': msg, 'type': 'text',
       'createdAt': Timestamp.now(), 'senderId': currentUser!.uid, 'isRead': false,
     });
-    _updateChatTime();
+    
+    _updateChatList(msg, 'text');
+    sendPushNotification(msg, 'text');
     _msgController.clear();
   }
 
@@ -134,14 +178,24 @@ class _ChatScreenState extends State<ChatScreen> {
         backgroundColor: const Color(0xFF1A1A2E).withOpacity(0.7),
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.white),
+        // ✅ Online Status පෙන්වන කොටස
         title: StreamBuilder<DocumentSnapshot>(
           stream: FirebaseFirestore.instance.collection('users').doc(widget.peerId).snapshots(),
           builder: (context, snapshot) {
             String? photoUrl;
+            bool isOnline = false;
+            String statusText = "Offline";
+
             if (snapshot.hasData && snapshot.data!.data() != null) {
               var data = snapshot.data!.data() as Map<String, dynamic>;
               if (data.containsKey('photoUrl')) photoUrl = data['photoUrl'];
+              // Online ද බලන්න
+              if (data.containsKey('isOnline')) {
+                isOnline = data['isOnline'];
+                statusText = isOnline ? "Online" : "Offline";
+              }
             }
+            
             return Row(
               children: [
                 CircleAvatar(
@@ -151,7 +205,22 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: (photoUrl == null || photoUrl.isEmpty) ? Text(widget.peerName[0].toUpperCase(), style: const TextStyle(color: Colors.white)) : null,
                 ),
                 const SizedBox(width: 12),
-                Expanded(child: Text(widget.peerName, style: const TextStyle(color: Colors.white, fontSize: 18), overflow: TextOverflow.ellipsis)),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(widget.peerName, style: const TextStyle(color: Colors.white, fontSize: 18), overflow: TextOverflow.ellipsis),
+                      // ✅ Status Text එක
+                      Text(
+                        statusText,
+                        style: TextStyle(
+                          color: isOnline ? Colors.greenAccent : Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             );
           },
