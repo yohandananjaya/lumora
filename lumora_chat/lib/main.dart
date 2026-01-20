@@ -1,33 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'login_screen.dart';
+import 'home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(); // Firebase Initialize කිරීම
-  runApp(const LumoraApp());
+  await Firebase.initializeApp(); // Firebase පටන් ගන්නවා
+  runApp(const MyApp());
 }
 
-class LumoraApp extends StatelessWidget {
-  const LumoraApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Lumora',
+      title: 'Lumora Chat',
       theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        primaryColor: const Color(0xFF6F00FF),
-        // Google Fonts භාවිතා කිරීම
-        textTheme: GoogleFonts.poppinsTextTheme(
-          Theme.of(context).textTheme.apply(bodyColor: Colors.white),
-        ),
+        primarySwatch: Colors.deepPurple,
         useMaterial3: true,
       ),
-      home: const LoginScreen(),
+      // මෙන්න මෙතනින් තමයි Login වෙලාද කියලා බලන්නේ
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          // 1. Loading වෙන වෙලාව (Login වෙනකම්)
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          // 2. User කෙනෙක් ඉන්නවා නම් (Login වෙලා නම්) -> Home එකට යවන්න
+          if (snapshot.hasData) {
+            return const HomeScreen();
+          }
+
+          // 3. එහෙම නැත්නම් (Logout වෙලා නම්) -> Login එකට යවන්න
+          return const LoginScreen();
+        },
+      ),
     );
   }
 }
